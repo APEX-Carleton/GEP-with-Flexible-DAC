@@ -1,0 +1,654 @@
+import numpy as np
+import networkx as nx
+import pandas as pd
+from pyomo.environ import *
+
+m = ConcreteModel()
+
+#Data
+D = 4
+Hr = 24
+T = 13
+c_tax = [37.1, 48.23, 59.36, 70.49, 81.62, 92.75, 103.88, 115.01, 126.14, 
+        126.14, 126.14, 126.14, 126.14]
+
+#c_tax = [37.1 for i in range(T)]
+
+#Discount rates
+df = [(1/(1+0.08)**i) for i in range(1, T+1)]
+
+#Techno-economic characteristics of generation technologies
+
+Rs = {1:{"Mr": [], "sG":50, "ccg": 124.12, "cf":20, "cv": 0,
+         "c_fuel": 0, "hr": 0, "em":0, "lt": 2, "lr":43.5},
+      2:{"Mr": [], "sG":50, "ccg": 135.93, "cf":42, "cv": 0,
+         "c_fuel": 0, "hr": 0, "em":0, "lt": 3, "lr":70.6},
+      3:{"Mr": 0.85, "sG": 237, "ccg": 89.09, "cf":21, "cv": 5,
+         "c_fuel": 2.97,"hr":9.72, "em":53.8, "lt": 2, "lr":12.4},
+      4:{"Mr": 0.85, "sG": 377, "ccg": 99.13, "cf":28, "cv": 2,
+         "c_fuel": 2.97, "hr":6.36, "em":53.8, "lt": 3, "lr":12.4},
+      5:{"Mr": 0.8, "sG": 377, "ccg": 197.91, "cf":63, "cv": 6,
+         "c_fuel": 2.97,"hr":7.16, "em":5.38, "lt": 3, "lr":12.4},
+      6:{"Mr": 0.82, "sG": 650, "ccg": 200.93, "cf":74, "cv": 8,
+         "c_fuel": 2.35,"hr":8.47, "em":91.80, "lt": 4, "lr":12.2},
+      7:{"Mr": 0.82, "sG": 650, "ccg": 362.11, "cf":125, "cv": 15,
+         "c_fuel": 2.35,"hr":10.83, "em":9.21, "lt": 4, "lr":12.2},
+      8:{"Mr": 0.82, "sG": 650, "ccg": 374.96, "cf":141, "cv": 14,
+         "c_fuel": 2.35,"hr":8.11, "em":90.45, "lt": 4, "lr":12.2},
+      9:{"Mr": 0.83, "sG": 2000, "ccg": 80000, "cf":151, "cv": 6,
+         "c_fuel": 3.25,"hr":13.5, "em":0, "lt": 4, "lr":0},
+      10:{"Mr": 0.8, "sG": 2000, "ccg": 80000, "cf":78, "cv": 0,
+          "c_fuel": 0,"hr":0, "em":0, "lt": 4, "lr":0},
+      11:{"Mr": 0.35, "sG": 2000, "ccg": 80000, "cf":0, "cv": 0,   #intertie import
+          "c_fuel": 0,"hr":0, "em":0, "lt": 1, "lr":0}
+    }
+
+   
+#Gen Techs: [PV, wind, NGSC, NGCC, NGCC-CCS, Coal, Coal-CCS, IGCC, Biopower, hydro]
+#Generation Technologies: 1: Solar, 2: wind, 3: Natural gas simple cycle (NGSC), 4: Natural gas combined cycle (NGCC),
+#5: Natural gas combined cycle with CCS (NGCC-CCS), 6: Coal (Ultra-supercritical: or USC), 7: Coal with CCS (C-CCS), 
+#8: Coal Integrated gasification combined cycle (C-IGCC), \n",
+#9: Biopower (from agricultural solid waste, waste paper pellets, organic solid waste byproducts, waste utility poles,
+# wood and wood residuals), 10: Hydropower. 11. Interties (imported power)
+
+#"Mr": Availability of generation technology as a fraction of installed capacity
+#"sG": Unit size of generation technology [MW] (Biomass and hydro set to zero to avoid capacity addition).
+#"cc": CAPEX (overnight capital cost) for generation technology [$/kW]
+#"cf": fixed O&M for each generation technology [$/kW-y].
+#"cv": Variable O&M for generation technology [$/MWh].
+#"hr": Heat rate for the generation technology [MMBtu/MWh]
+#"em": Emission coefficient of generation technology [kg/MMBtu]
+#"lt": Lead time for new units (biomass and hydro set high to stop capacity addition)
+#"lr": Land requirement for the technology (not model)
+
+
+#Existing units for each node (i) and each technology (r)\n",
+#[PV, wind, NGSC, NGCC, NGCC-CCS, Coal, Coal-CCS, IGCC, Biopower, hydro, import, BESS_power, BESS_Energy, land_size(acres)]
+
+node ={4:[37, 925, 20, 299, 0, 0, 0, 0, 42, 0, 0, 0, 0, 3627677],
+       6:[27, 0, 156, 1318, 0, 0, 0, 0, 10, 0, 0, 0, 0, 777033], 
+       13:[0, 152, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1531781],
+       17:[0, 0, 97, 73, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9946405],
+       18:[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 11968646], 
+       19:[0, 0, 20, 0, 0, 0, 0, 0, 52, 0, 0, 0, 0, 16453894],
+       20:[0, 0, 286, 0, 0, 0, 0, 0, 71, 0, 0, 40, 80, 5049769], 
+       21:[0, 0, 0, 0, 0, 0, 0, 0, 9, 0, 0, 0, 0, 1222568],
+       22:[0, 0, 300, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5376686],
+       23:[0, 0, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1978889],
+       24:[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1499619],
+       25:[0, 0, 2850, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 35077933],
+       26:[0, 0, 93, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3444672],
+       27:[0, 0, 0, 0, 0, 0, 0, 0, 149, 0, 0, 0, 0, 5637305],
+       28:[0, 0, 589, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3703680],
+       29:[0, 0, 13, 0, 0, 0, 0, 0, 50, 0, 0, 0, 0, 6365192],  
+       30:[0, 0, 13, 0, 0, 0, 0, 0, 0, 350, 0, 0, 0, 3296050],
+       31:[0, 0, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2055930],
+       32:[0, 0, 20, 0, 0, 0, 0, 0, 0, 0, 0, 20, 40, 1610432],
+       33:[0, 0, 827, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1160870],
+       34:[0, 0, 0, 0, 0, 0, 0, 0, 0, 120, 0, 0, 0, 3841564],
+       35:[0, 0, 480, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1249123],
+       36:[0, 0, 550, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1028514],
+       37:[0, 29, 0, 0, 0, 0, 0, 0, 0, 0, 0, 20, 40, 1009241],
+       38:[0, 0, 19, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1942738],
+       39:[22, 0, 45, 0, 0, 0, 0, 0, 0, 15, 0, 0, 0, 982186],
+       40:[0, 0, 1725, 0, 0, 820, 0, 0, 0, 0, 0, 0, 0, 2539824], 
+       42:[63, 658, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6770288],
+       43:[0, 208, 800, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1298076],
+       44:[0, 0, 0, 0, 0, 0, 0, 0, 0, 320, 0, 0, 0, 2273404], 
+       45:[0, 0, 95, 120, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1595035],
+       46:[0, 0, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1114564],
+       47:[42, 0, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1697991],
+       48:[62, 209, 46, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2060357],
+       49:[637, 300,  10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 996499],
+       52:[236, 81, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1942106], 
+       53:[0, 996, 0, 0, 0, 0, 0, 0, 0, 32, 0, 10, 20, 2238652],
+       54:[47, 143, 11, 0, 0, 0, 0, 0, 0, 15, 0, 0, 0, 766518], 
+       55:[0, 30, 6, 0, 0, 0, 0, 0, 0, 42, 0, 0, 0, 2820770], 
+       56:[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2676717], 
+       57:[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 328343],
+       60:[14, 0, 352, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 925382],
+       61:[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 750, 0, 0, 0],
+       62:[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 295, 0, 0, 0],
+       63:[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 153, 0, 0, 0]
+      }
+
+
+
+#Network: d = node-node distance [km] 
+def net():
+    net = nx.Graph()
+    net.add_edge(4, 47,  d=131.0)
+    net.add_edge(4, 48,  d=54.7)
+    net.add_edge(6, 39,  d=63.6)
+    net.add_edge(6, 57,  d=31.1)
+    net.add_edge(6, 61,  d=146.7) #intertie
+    net.add_edge(13, 32, d=64.7)
+    net.add_edge(13, 37, d=101.2)
+    net.add_edge(17, 18, d=162.5)
+    net.add_edge(17, 19, d=297.3)
+    net.add_edge(19, 25, d=452.1)
+    net.add_edge(19, 21, d=244.3)
+    net.add_edge(19, 20, d=215.3)
+    net.add_edge(19, 23, d=144.4)
+    net.add_edge(19, 21, d=244.3)
+    net.add_edge(20, 23, d=135.5)
+    net.add_edge(20, 22, d=113.4)
+    net.add_edge(21, 26, d=49.3)
+    net.add_edge(21, 25, d=381.6)
+    net.add_edge(21, 40, d=192.2)
+    net.add_edge(23, 22, d=152.1)
+    net.add_edge(23, 24, d=89.5)
+    net.add_edge(23, 26, d=130.2)
+    net.add_edge(23, 21, d=129.0)
+    net.add_edge(24, 29, d=82.9)
+    net.add_edge(25, 40, d=525.1)
+    net.add_edge(25, 27, d=278.6)
+    net.add_edge(25, 28, d=316.5)
+    net.add_edge(26, 24, d=135.1)
+    net.add_edge(26, 40, d=117.6)
+    net.add_edge(27, 40, d=212.1)
+    net.add_edge(27, 60, d=142.6)
+    net.add_edge(27, 33, d=97.1)
+    net.add_edge(27, 56, d=175.2)
+    net.add_edge(27, 28, d=134.0)
+    net.add_edge(28, 33, d=140.8)
+    net.add_edge(28, 56, d=124.6)
+    net.add_edge(28, 13, d=120.9)
+    net.add_edge(29, 40, d=124.8)
+    net.add_edge(29, 30, d=142.8)
+    net.add_edge(30, 40, d=133.0)
+    net.add_edge(30, 35, d=138.8)
+    net.add_edge(31, 35, d=83.7)
+    net.add_edge(32, 36, d=75.2)
+    net.add_edge(32, 37, d=36.0)
+    net.add_edge(34, 38, d=104.8)
+    net.add_edge(35, 39, d=56.0)
+    net.add_edge(35, 6,  d=141.8)
+    net.add_edge(35, 57, d=87.8)
+    net.add_edge(36, 37, d=113.8)
+    net.add_edge(38, 35, d=76.5)
+    net.add_edge(38, 39, d=73.2)
+    net.add_edge(40, 35, d=212.6)
+    net.add_edge(40, 60, d=86.0)
+    net.add_edge(40, 6,  d=391.0)
+    net.add_edge(42, 35, d=137.1)
+    net.add_edge(42, 36, d=67.7)
+    net.add_edge(42, 37, d=165.2)
+    net.add_edge(43, 42, d=69.3)
+    net.add_edge(44, 39, d=119.8)
+    net.add_edge(44, 6,  d=77.5)
+    net.add_edge(44, 61, d=66.8)   #intertie
+    net.add_edge(45, 6,  d=82.3)
+    net.add_edge(46, 6,  d=78.8)
+    net.add_edge(46, 45, d=80.8)
+    net.add_edge(47, 45, d=85.6)
+    net.add_edge(47, 6,  d=211.0)
+    net.add_edge(47, 33, d=485.7)
+    net.add_edge(47, 43, d=56.5)
+    net.add_edge(48, 47, d=103.2)
+    net.add_edge(48, 42, d=206.6)
+    net.add_edge(48, 63, d=60.9)     #intertie
+    net.add_edge(49, 46, d=87.4)
+    net.add_edge(49, 45, d=74.4)
+    net.add_edge(49, 47, d=108.3)
+    net.add_edge(52, 4,  d=108.5)
+    net.add_edge(52, 47, d=91.2)
+    net.add_edge(53, 54, d=75.3)
+    net.add_edge(53, 49, d=113.5)
+    net.add_edge(53, 61, d=145.8) #intertie
+    net.add_edge(54, 52, d=62.2)
+    net.add_edge(54, 49, d=69.6)
+    net.add_edge(54, 62, d=85.9)  #intertie
+    net.add_edge(55, 53, d=51.7)
+    net.add_edge(55, 54, d=51.7)
+    net.add_edge(56, 13, d=75.2)
+    net.add_edge(56, 36, d=192.7)
+    net.add_edge(56, 31, d=181.0)
+    net.add_edge(60, 35, d=158.3)
+    net.add_edge(60, 31, d=74.0)
+    net.add_edge(60, 33, d=44.1)
+
+    
+    return net
+
+#Interties: 61:BC, 62: MT, 63: SK
+
+net= net()
+node_list = frozenset([4, 6, 13, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+                       32, 33, 34, 35, 36, 37, 38, 39, 40, 42, 43, 44, 45, 46, 47, 48, 49,
+                       52, 53, 54, 55, 56, 57, 60, 61, 62, 63])
+#list of edges
+E = list(net.edges)
+def adj(n, net=net):
+    '''Returns the list of neighbors to any node n'''
+    return list(net.neighbors(n))
+
+
+#Defining contactor, pellet reactor and slaker consumption
+
+def p_df(x):
+    return -103.82563371*x**5 + 461.67930221*x**4 - 818.66261092*x**3 + \
+           723.87692146*x**2 - 319.4837522*x + 56.9813999
+
+#defining calciner consumption
+def p_dv(x):
+    return 0.03091105*x**3 - 0.08159667*x**2 + 0.07427724*x + 1.31836001
+
+
+#interties
+it = [61, 62, 63]
+list_d =[i for i in range(1, D+1)]
+res = [0 for i in range(24)]
+#adding the intertie load, and PV/wind capacity factors
+for tie in it:
+    rd[tie] = {}
+    for d in list_d:
+        rd[tie][d] = {}
+        rd[tie][d]={'load':res, 'pv':res, 'wind':res, 'c_rate': res}
+        rd[tie][d]['w'] = 365/len(list_d)
+        
+#increasing peak load by 15% for reserve case 
+
+for I in node_list:
+    #if I not in it:
+        for d in list_d:
+            for i in rd[I][d]['load']:
+                if i ==max([max(rd[I][d]['load']) for I in node_list if I not in it for d in list_d]):
+                    #print(I, d, rd[I][d]['load'].index(i))
+                    rd[I][d]['load'][rd[I][d]['load'].index(i)] *=1.15
+                    
+
+
+#Sets and indices
+
+m.d = RangeSet(D)
+m.R = RangeSet(11)                                                      #generating technology
+m.H = RangeSet(Hr)                                                      #hours (index for operating conditions)
+m.I = Set(initialize = node_list)                                      #Nodes
+m.t = RangeSet(T)                                                      #Investment period/phase
+#m.L = RangeSet(net.number_of_edges())                                  #Transmission line
+
+#Parameters             
+m.dt = Param(initialize=1.0, within=NonNegativeReals)                   #Timestep size
+m.Ps = Param(initialize=60, within = NonNegativeReals)                  #Power rating of a unit battery storage
+m.Es = Param(initialize=120, within = NonNegativeReals)                  #Energy capacity of a unit battery storage
+m.Cs =Param(initialize=123.83, within =NonNegativeReals)                  #Cost per kW of BESS storage
+m.Cf_s = Param(initialize=27.0, within =NonNegativeReals)                 #Fixed O&M for BESS
+m.Cv_dac = Param(initialize=74.3, within = NonNegativeReals)           #Var opex (including Trans$Storage) for DAC plant $/t
+m.Cf_dac = Param(initialize=44.5, within = NonNegativeReals)          #Fixed opex for DAC $/t/year
+m.Cc_dac = Param(initialize=12.9, within = NonNegativeReals)           #Capex for DAC plant $/t/year
+m.T_cc_max = Param(initialize=0.0, within = NonNegativeReals)           #Hours of storage at caco3
+m.Al = Param(initialize=0.10, within= NonNegativeReals)                 #Limit of fraction of land for generation.
+m.B = Param(initialize =2.8, within= NonNegativeReals)  #2.8            #Susceptance per km of line
+m.Incr = Param(initialize = 1.015, within= NonNegativeReals)            #Increment factor for load (0.9 given by AESO)
+m.sDac = Param(initialize = 11.42, within = NonNegativeReals)           #DAC plant unit size in t/hr
+m.cI = Param(initialize = 0, within = NonNegativeReals)               #Cost of importing power $/MWh
+m.fuel_dac = Param(initialize=3.839, within=NonNegativeReals)
+#m.CcP = Param(initialize= 150.0, within = NonNegativeReals)              #selling price of captured carbon $/ton_CO2
+
+#Decision Variables
+#1. Power system
+m.pg = Var(m.t, m.d, m.H, m.I, m.R,  within=NonNegativeReals)                #Genertor unit output
+m.sc = Var(m.t, m.I, m.R, within=NonNegativeReals)                       #total generation capacity at a node
+m.ng = Var(m.t, m.I, m.R, within=NonNegativeIntegers)                   #number of new gen capacity additions at a node
+#m.pl = Var(m.t, m.d, m.H, m.L,  within=Reals)                                #line flow
+m.delta = Var(m.t, m.d, m.H, m.I, bounds=(-np.pi, np.pi), within=Reals)      #power angle at a node
+m.pes = Var(m.t, m.d, m.H, m.I, within=Reals)                                #Battery power at a node
+m.es = Var(m.t, m.d, m.H, m.I, within=NonNegativeReals)                      #Stored energy at node
+m.ns = Var(m.t, m.I, within= NonNegativeIntegers)                        #Number of new storage units added at a node
+m.cpes = Var(m.t, m.I, within=NonNegativeReals)                         #Storage power rating at node
+m.ces = Var(m.t, m.I, within=NonNegativeReals)                          #Total energy storage capacity at a node
+
+#2. Static DAC variables
+m.x_c_max = Var(m.t, m.I, within=NonNegativeReals)             #Maximum calciner flowrate (throughput in tons of caco3/hr)
+m.r_cc_max = Var(m.t, m.I, within=Reals)                       #Maximum mass flow rate into caco3 silo
+m.r_cc_min = Var(m.t, m.I, within=Reals)                       #Minimum mass flow rate into caco3 silo
+m.r_c_max = Var(m.t, m.I,  within=Reals)                       #Maximum mass flow rate into cao silo
+m.r_c_min = Var(m.t, m.I,  within=Reals)                       #Minimum mass flow rate into cao silo
+m.m_cc_max = Var(m.t, m.I, within=NonNegativeReals)            #capacity of caco3 silo
+m.m_c_max = Var(m.t, m.I, within=NonNegativeReals)             #capacity of cao silo
+m.p_df = Var(m.t, m.d, m.H, m.I, within=NonNegativeReals)                #DAC plant fixed demand at node
+m.dac_cap = Var(m.t, m.I, within =NonNegativeReals)             #DAC plant capacity in t-CO2/hour
+m.n_dac = Var(m.t, m.I, within = NonNegativeIntegers)             #Number of 100kt dac plants at node I
+#m.slack = Var(m.t, m.I, within = NonNegativeReals)
+#3. Dynamic DAC variables\
+
+m.x_p = Var(m.t, m.d, m.H, m.I, within=NonNegativeReals)                 #pellet reactor throughput (tons of caco3/hour)
+m.x_s = Var(m.t, m.d, m.H, m.I, within=NonNegativeReals)                 #Slaker throughput (tons of cao/hour)
+m.rcc = Var(m.t, m.d, m.H, m.I, within=Reals)                       #Flow rate into the calcium carbonate  silo
+m.rc = Var(m.t, m.d, m.H, m.I, within=Reals)                        #Flow rate into the calcium oxide silo
+m.mcc = Var(m.t, m.d, m.H, m.I, within=NonNegativeReals)            #Mass of calcium carbonate stored
+m.mc = Var(m.t, m.d, m.H, m.I, within=NonNegativeReals)             #Mass of calcium oxide stored
+m.m_co2 = Var(m.t, m.d, m.H, m.I, within=NonNegativeReals)          #Mass of co2 regenerated
+m.p_dv = Var(m.t, m.d, m.H, m.I, within=NonNegativeReals)           #Variable demand of the DAC plant
+m.x_c = Var(m.t, m.d, m.H, m.I, within=NonNegativeReals)            #Total calcination line throughput at time t 
+m.c_rate = Var(m.t, m.d, m.H, m.I, within=NonNegativeReals)          #DAC hourly maximum capture
+#m.c_net = Var(m.t, m.d, m.H, m.I, within = Reals)                   #Net carbon emission
+
+
+#Objective
+
+def objective(m):
+
+    return sum(((Rs[R]["cv"] + Rs[R]["c_fuel"]*Rs[R]["hr"]+ \
+                 c_tax[t-1]*Rs[R]["hr"]*Rs[R]["em"]/1000)*\
+                m.pg[t,d,H,I,R] + m.Cv_dac*m.m_co2[t, d, H, I])*\
+               rd[I][d]['w']*df[t-1] for R in m.R if R!=11 for I in m.I for d in m.d for H in m.H for t in m.t)+\
+sum((Rs[R]["ccg"]*m.ng[t,I,R]*Rs[R]["sG"] +\
+     m.ns[t,I]*m.Ps*m.Cs)*1000*sum(df[t-1:]) for R in m.R for I in m.I for t in m.t)+\
+8760*m.Cf_dac*sum(m.dac_cap[t, I]*df[t-1] for I in m.I for t in m.t)+\
+sum(((Rs[R]["cf"]*m.sc[t,I,R] + m.Cf_s*m.cpes[t,I])*1000*df[t-1]) +\
+     100000*m.Cc_dac*m.n_dac[t, I]*sum(df[t-1:]) for R in m.R for I in m.I for t in m.t)+\
+sum(m.cI*m.pg[t,d,H,I,11]*df[t-1] for I in m.I for d in m.d for H in m.H for t in m.t)
+
+
+
+m.objective = Objective(rule=objective, sense=minimize)
+
+#Total installed capacity so far at a node (accounts for lead time, "lt":Rs[R]["lt"])
+#To cater for generation expansion prior to model lead time, 
+#we assume a 6.5% growth as recently observed with AESO (2021-2022 growth)
+
+def total_gen_at_node(m, t, I, R):
+    if t<=Rs[R]["lt"]:
+        return m.sc[t, I ,R] == node[I][R-1]
+    else:
+        return m.sc[t, I, R] == m.sc[t-1, I, R] + m.ng[t-Rs[R]["lt"], I, R]*Rs[R]["sG"] 
+
+m.total_gen_at_node = Constraint(m.t, m.I, m.R, rule=total_gen_at_node)
+
+#Total installed capacity so far at a node
+# def total_gen_at_node(m, t, I, R):
+#     if t==1:
+#         return m.sc[t, I, R] == node[I][R-1]
+#     else:
+#         return m.sc[t, I, R] == m.sc[t-1, I, R] + m.ng[t, I, R]*Rs[R]["sG"] 
+
+# m.total_gen_at_node = Constraint(m.t, m.I, m.R, rule=total_gen_at_node)
+
+#Battery storage at node
+
+def total_storage_ECap_at_node(m, t, I):
+    if t==1:
+        return m.ces[t, I] == node[I][12] 
+    else:
+        return m.ces[t, I] == m.ns[t, I]*m.Es + m.ces[t-1, I]
+
+m.total_storage_ECap_at_node = Constraint(m.t, m.I, rule=total_storage_ECap_at_node)
+
+def total_storagePRate_at_node(m, t, I):
+    if t==1:
+        return m.cpes[t, I] == node[I][11] 
+    else:
+        return m.cpes[t, I] == m.ns[t, I]*m.Ps + m.cpes[t-1, I]
+
+m.total_storagePRate_at_node = Constraint(m.t, m.I, rule=total_storagePRate_at_node)
+
+#Limit of gen capacity expansion at any node
+def limit_gen_cap_expansion(m, t, I):
+    return sum(m.sc[t, I, R]*Rs[R]["lr"] for R in m.R) <= m.Al*node[I][13]
+
+m.limit_gen_cap_expansion = Constraint(m.t, m.I, rule=limit_gen_cap_expansion)
+                                   
+#Limit of storage capacity expansion at any node\n",
+def limit_storage_cap_expansion(m, t, I):
+    return m.cpes[t, I] <= sum(m.sc[t, I, R] for R in m.R)
+
+m.limit_storage_cap_expansion = Constraint(m.t, m.I, rule=limit_storage_cap_expansion)
+
+#Power balance at node
+def node_power_balance(m, t, d, H, I):  
+    return (rd[I][d]['load'][H-1])*(m.Incr)**(t) + m.p_dv[t, d, H, I] +\
+m.p_df[t, d, H, I]== sum(m.pg[t, d, H, I, R] for R in m.R) + \
+m.pes[t, d, H, I] - sum((m.delta[t, d, H, I] - m.delta[t, d, H, n])*\
+    (net[I][n]['d'])*m.B for n in adj(I))
+
+m.node_power_balance = Constraint(m.t, m.d, m.H, m.I, rule=node_power_balance)
+
+#Generator operational limits
+def gen_op_limit(m, t, d, H, I, R):
+
+    if R==1:
+        return m.pg[t, d, H, I, R] <=rd[I][d]['pv'][H-1]*m.sc[t, I, R]
+    elif R==2:
+        return m.pg[t, d, H, I, R] <=rd[I][d]['wind'][H-1]*m.sc[t, I, R]
+    else:
+        return m.pg[t, d, H, I, R] <=Rs[R]['Mr']*m.sc[t, I, R]
+
+m.gen_op_limit = Constraint(m.t, m.d, m.H, m.I, m.R, rule=gen_op_limit)
+
+#Battery storage update
+def energy_storage_update(m, t, d, H, I):
+    if H==1 or H==24:
+        return m.es[t, d, H, I] == 0
+    else:
+        return m.es[t, d, H, I] == m.es[t, d, H-1, I] - m.pes[t, d, H, I]
+
+m.energy_storage_update = Constraint(m.t, m.d, m.H, m.I, rule=energy_storage_update)
+
+#Energy Storage limits
+def storage_power_lower_lim(m, t, d, H, I):
+    return m.pes[t, d, H, I] >= -m.cpes[t, I]
+
+m.storage_power_lower_lim = Constraint(m.t, m.d, m.H, m.I, rule=storage_power_lower_lim)
+
+def storage_power_upper_lim(m, t, d, H, I):
+    return m.pes[t, d, H, I] <= m.cpes[t, I]
+
+m.storage_power_upper_limit = Constraint(m.t, m.d, m.H, m.I, rule=storage_power_upper_lim)
+
+def storage_energy_level_lim(m, t, d, H, I):
+    return m.es[t, d, H, I] <= m.ces[t, I]
+
+m.storage_energy_level_lim = Constraint(m.t, m.d, m.H, m.I, rule=storage_energy_level_lim)
+
+#Power flow through lines
+#def line_flows(m, t, d, H, L):
+ #   return m.pl[t, d, H, L] == (m.delta[t, d, H, E[L-1][0]]-m.delta[t, d, H, E[L-1][1]])*\
+  #                              (net[E[L-1][0]][E[L-1][1]]['d'])*m.B
+
+#m.line_flows = Constraint(m.t, m.d, m.H, m.L, rule=line_flows)
+
+#Line flow limits
+#def line_flow_upper_lim(m, t, d, H, L):
+ #   return m.pl[t, d, H, L]<= 10000
+
+#m.line_flow_upper_lim = Constraint(m.t, m.d, m.H, m.L, rule=line_flow_upper_lim)
+
+#def line_flow_lower_lim(m, t, d, H, L):
+ #   return m.pl[t, d, H, L]>=-10000
+
+#m.line_flow_lower_lim = Constraint(m.t, m.d, m.H, m.L, rule=line_flow_lower_lim)
+
+#Slack bus power angle constraint
+def slack_bus_angle(m, t, d, H, I):
+    return m.delta[t, d, H, 4] == 0
+m.slack_bus_angle=Constraint(m.t, m.d, m.H, m.I, rule = slack_bus_angle)
+
+
+#DAC static constraints
+
+#DAC capacity at node
+def dac_capacity_at_node(m, t, I):
+    if t==1:
+        return m.dac_cap[t, I] == 0
+    #return m.c_rate[t, I]==0
+
+    return m.dac_cap[t, I] == m.dac_cap[t-1, I] + m.sDac*m.n_dac[t-1, I]
+
+m.dac_capacity_at_node = Constraint(m.t, m.I, rule=dac_capacity_at_node)
+
+#Capture rate at node
+def dac_rate_at_node(m, t, d, H, I):
+    '''Capacity multiplied by the capture rate based on weather data'''
+    return m.c_rate[t, d, H, I] == m.dac_cap[t, I]*rd[I][d]['c_rate'][H-1]
+
+m.dac_rate_at_node=Constraint(m.t, m.d, m.H, m.I, rule = dac_rate_at_node)
+
+
+#nodal pellete reactor flowrate\n",
+def pellet_flow(m, t, d, H, I):
+    '''Pellete reactor flowrate depends on capture rate'''
+    return m.x_p[t, d, H, I]==25/11*m.c_rate[t, d, H, I]                       
+m.pellet_flow = Constraint(m.t, m.d, m.H, m.I, rule = pellet_flow)
+
+#nodal slaker flowrate\n",
+def slaker_flow(m, t, d, H, I):
+    '''Slaker flowrate depends on capture rate'''
+    return m.x_s[t, d, H, I]==14/11*m.c_rate[t, d, H, I]
+m.slaker_flow = Constraint(m.t, m.d, m.H, m.I, rule = slaker_flow)
+
+#Calciner maximum throughput at node
+def max_calciner_flow(m, t, I):
+    '''Calciner size is set at twice the flowrate of the max capture rate DAC at node'''
+    return m.x_c_max[t, I]== 2*(25/11)*m.dac_cap[t, I]         
+m.max_calciner_flow = Constraint(m.t, m.I, rule = max_calciner_flow)
+
+
+#nodal max caco3 storage
+def caco3_silo_max(m, t, I):
+    '''Carbonate silo size set at max storage time multiplied by
+    the flowrate of the max capture rate DAC at node '''
+    return m.m_cc_max[t, I]<=m.T_cc_max*25/11*m.dac_cap[t, I]
+m.caco3_silo_max = Constraint(m.t, m.I, rule = caco3_silo_max)
+
+#nodal max cao storage
+def cao_silo_max(m, t, I):
+    '''CaO silo size set at 56% of maximum carbonate flowrate'''
+    return m.m_c_max[t, I]<=0.56*m.m_cc_max[t, I]
+m.cao_silo_max = Constraint(m.t, m.I, rule = cao_silo_max)
+
+#nodal max caco3 flowrate
+def caco3_flow_max(m, t, I):
+    return m.r_cc_max[t, I]<=25/11*m.dac_cap[t, I]
+m.caco3_flow_max = Constraint(m.t, m.I, rule = caco3_flow_max)
+
+#nodal min caco3 flowrate
+def caco3_flow_min(m, t, I):
+    return m.r_cc_min[t, I]>=-25/11*m.dac_cap[t, I]
+m.caco3_flow_min = Constraint(m.t, m.I, rule = caco3_flow_min)
+
+
+#nodal max cao flowrate
+def cao_flow_max(m, t, I):
+    '''Calcium oxide flow into the silo is limited by maximum 
+    flowrate of slaker of full capacity DAC'''
+    return m.r_c_max[t, I]<=14/11*m.dac_cap[t, I]
+m.cao_flow_max = Constraint(m.t, m.I, rule = cao_flow_max)
+
+#nodal min cao flowrate
+def cao_flow_min(m, t, I):
+    return m.r_c_min[t, I]>=-14/11*m.dac_cap[t, I]
+m.cao_flow_min = Constraint(m.t, m.I, rule = cao_flow_min)
+
+#nodal fixed DAC demand
+def fixed_dac_demand(m, t, d, H, I):
+    '''0.141 ==slaker,pellet reactor and contactor demand (MWh/t-CO2)'''
+    return m.p_df[t, d, H, I] == p_df(rd[I][d]['c_rate'][H-1])*m.c_rate[t, d, H, I]           
+
+m.fixed_dac_demand = Constraint(m.t, m.d, m.H, m.I, rule = fixed_dac_demand)
+
+#DAC dynamic constraints
+
+#Calciner flowrate
+
+#Calciner maximum throughput at node
+def calciner_flow_limit(m, t, d, H, I):
+    return m.x_c[t, d, H, I]<= m.x_c_max[t, I]
+m.calciner_flow_limit = Constraint(m.t, m.d, m.H, m.I, rule = calciner_flow_limit)
+
+#carbonate storage dynamics
+def caco3_silo_level(m, t, d, H, I):
+    if H==1:
+        return  m.mcc[t, d, H, I]== m.rcc[t, d, H, I]*m.dt
+    else:
+        return m.mcc[t, d, H, I]==m.mcc[t, d, H-1, I] + m.rcc[t, d, H, I]*m.dt
+
+m.caco3_silo_level = Constraint(m.t, m.d, m.H, m.I, rule=caco3_silo_level)
+
+#limits of caco3 silo level
+def max_caco3_silo_level(m, t, d, H, I):
+    return m.mcc[t, d, H, I]<=m.m_cc_max[t, I]
+
+m.max_caco3_silo_level = Constraint(m.t, m.d, m.H, m.I, rule=max_caco3_silo_level)
+
+#All stored caco3 must be calcined, ensuring all capture CO2 is regenerated
+def caco3_silo_final(m, t, d, H, I):
+    return m.mcc[t, d, Hr, I] ==0
+m.caco3_silo_final = Constraint(m.t, m.d, m.H, m.I, rule=caco3_silo_final)
+
+#oxide storage dynamics
+def cao_silo_level(m, t, d, H, I):
+    if H==1:
+        return  m.mc[t, d, H, I]== m.m_c_max[t, I]+ m.rc[t, d, H, I]*m.dt
+    else:
+        return m.mc[t, d, H, I]==m.mc[t, d, H-1, I] + m.rc[t, d, H, I]*m.dt 
+
+m.cao_silo_level = Constraint(m.t, m.d, m.H, m.I, rule=cao_silo_level)
+
+#limits of cao silo level
+def max_cao_silo_level(m, t, d, H, I):
+    return m.mc[t, d, H, I]<=m.m_c_max[t, I]
+
+m.max_cao_silo_level = Constraint(m.t, m.d, m.H, m.I, rule=max_cao_silo_level)
+
+                                   
+#Calcium carbonate flow
+def carbonate_flow(m, t, d, H, I):
+    return m.x_p[t, d, H, I] == m.rcc[t, d, H, I] + m.x_c[t, d, H, I]
+
+m.carbonate_flow = Constraint(m.t, m.d, m.H, m.I, rule=carbonate_flow)
+                                   
+#limits of caco3 flow
+def max_caco3_flow(m, t, d, H, I):
+    return m.rcc[t, d, H, I]<=m.r_cc_max[t, I]
+
+m.max_caco3_flow = Constraint(m.t, m.d, m.H, m.I, rule=max_caco3_flow)
+
+def min_caco3_flow(m, t, d, H, I):
+    return m.rcc[t, d, H, I]>=m.r_cc_min[t, I]
+
+m.min_caco3_flow = Constraint(m.t, m.d, m.H, m.I, rule=min_caco3_flow)
+                                   
+#Calcium oxide flow
+def oxide_flow(m, t, d, H, I):
+    return 0.56*m.x_c[t, d, H, I] == m.x_s[t, d, H, I] + m.rc[t, d, H, I]
+
+m.oxide_flow = Constraint(m.t, m.d, m.H, m.I, rule=oxide_flow)
+
+
+#limits of cao flow
+def max_cao_flow(m, t, d, H, I):
+    return m.rc[t, d, H, I]<=m.r_c_max[t, I]
+
+m.max_cao_flow = Constraint(m.t, m.d, m.H, m.I, rule=max_cao_flow)
+
+def min_cao_flow(m, t, d, H, I):
+    return m.rc[t, d, H, I]>=m.r_c_min[t, I]
+
+m.min_cao_flow = Constraint(m.t, m.d, m.H, m.I, rule=min_cao_flow)
+
+#mass of co2 produced\n",
+def mass_co2_produced(m, t, d, H, I):
+    return m.m_co2[t, d, H, I] ==0.44*m.x_c[t, d, H, I]*m.dt
+
+m.mass_co2_produced = Constraint(m.t, m.d, m.H, m.I, rule=mass_co2_produced)
+
+#Net CO2 removal (for net-zero analysis)(m.t, m.H, m.I, m.R,
+#def net_carbon_emission(m, t, d, H, I):
+    #return m.c_net[t, d, H, I]==sum(Rs[R]['em']*Rs[R]['hr']*m.pg[t, d, H, I, R] for R in m.R) - m.m_co2[t, d, H, I]
+    
+#m.net_carbon_emission = Constraint(m.t, m.d, m.H, m.I, rule=net_carbon_emission)
+
+#Variable DAC plant demand
+def variable_demand(m, t, d, H, I):
+    return m.p_dv[t, d, H, I] == p_dv(rd[I][d]['c_rate'][H-1])*m.m_co2[t, d, H, I]
+
+m.variable_demand = Constraint(m.t, m.d, m.H, m.I, rule=variable_demand)
+
+#Net-zero emission constraint
+def net_zero(m):
+    return sum(Rs[R]['em']*Rs[R]['hr']*rd[I][d]['w']*m.pg[T, d, H, I, R] for R in m.R for I in m.I for H in m.H for d in m.d)/1000 -\
+sum(m.m_co2[T, d, H, I]*rd[I][d]['w'] for I in m.I for H in m.H for d in m.d)<=0.0
+
+m.net_zero = Constraint(rule=net_zero)
