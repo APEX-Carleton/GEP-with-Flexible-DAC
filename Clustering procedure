@@ -1,0 +1,140 @@
+import os
+import pandas as pd
+import matplotlib.pyplot as plt
+import numpy as np
+import netCDF4 as nc
+from sklearn.cluster import KMeans
+from sklearn.metrics import pairwise_distances_argmin_min
+#from sklearn.metrics import silhouette_score
+os.environ["OMP_NUM_THREADS"] = "2"
+
+#Reading the DAC capture rate data
+fn = 'Alberta_hourly_2019.nc'
+ds = nc.Dataset(fn)
+
+latitude = list(ds['lat'][:])
+longitude = list(ds['lon'][:])
+captureRate = np.array(list(ds['gross_capture'][:]))
+energyconsB =np.array(list(ds['electrical_energy_B'][:]))
+energyconsA =np.array(list(ds['electrical_energy_A'][:]))
+
+#Planning area latitudes
+lat= [49.75, 51.0, 53.5, 59.0, 58.5, 57.5, 55.25, 55.25, 54.0, 55.0,
+       54.25, 57.25, 54.5, 54.5, 54.5, 53.25, 53.0, 53.0, 52.75,53.75,
+       52.0, 52.25, 52.5, 52.5, 52.0, 51.75, 53.75, 52.0, 51.25, 51.25, 
+       51.0, 50.5, 50.75, 50.75, 50.25, 50.0, 49.75, 49.75, 49.25, 53.5,
+       51.5, 53.5]
+#Planning area longitudes
+long= [-110.75, -114.0, -110.5, -118.5, -116.0, -117.0, -118.75, -115.5,
+        -118.5, -117.0, -117.0, -112.25, -115.5, -112.75, -110.5, -117.0, 
+        -115.25, -113.25, -111.25, -113.0, -116.25, -113.75, -112.25, -110.5,
+        -115.25, -114.0, -114.5, -111.75, -112.0, -115.0, -113.25, -114.0, -112.0,
+        -110.5, -113.25, -111.75, -113.75, -112.5, -112.75, -111.75, -114.0, -113.5]
+
+
+
+#Reading the load data
+data = pd.read_excel('Hourly-load-by-area-and-region-May-2020-to-Feb-2022.xlsx')
+
+data = data[['Date (MST)', 'AREA13', 'AREA17', 'AREA18', 'AREA19', 'AREA20',
+       'AREA21', 'AREA22', 'AREA23', 'AREA24', 'AREA25', 'AREA26', 'AREA27',
+       'AREA28', 'AREA29', 'AREA30', 'AREA31', 'AREA32', 'AREA33', 'AREA34',
+       'AREA35', 'AREA36', 'AREA37', 'AREA38', 'AREA39', 'AREA4', 'AREA40',
+       'AREA42', 'AREA43', 'AREA44', 'AREA45', 'AREA46', 'AREA47', 'AREA48',
+       'AREA49', 'AREA52', 'AREA53', 'AREA54', 'AREA55', 'AREA56', 'AREA57',
+       'AREA6', 'AREA60', ]]
+
+data ["Date"] = pd.to_datetime(data['Date (MST)'])
+load = data.loc[data['Date'].between('2021-01-01 00:00:00','2021-12-31 23:00:00', inclusive='both')]
+load = load.set_index('Date')
+
+#Folder path for renewables capacity factor
+path = os.getcwd()
+folder = "/wind_and_solar/"
+days = [i for i in range(1, 5)]
+
+#
+
+
+#List of planning area codes
+pas = [4, 6, 13, 17, 18, 19, 20, 21, 22, 23, 24, 
+      25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 
+      36, 37, 38, 39, 40, 42, 43, 44, 45, 46, 47, 
+      48, 49, 52, 53, 54, 55, 56, 57, 60]
+
+score = []
+
+#Building the representative days dictionary
+area_data = {}
+for pa in pas:
+    
+    #Load
+    pa_load = load["AREA"+str(pa)]
+    load_p = {}
+    hours = [i for i in range(24)]
+    for i in hours:
+        loadvals=list(pa_load[pa_load.index.hour == i])
+        load_p[i]= loadvals
+    load_pa = pd.DataFrame(load_p)
+
+    #wind reading
+    wind = pd.read_csv(path + folder + 'Area' + str(pa) + '/wind-' + str(pa) + '.csv' )
+    wind["capacity factor"] = wind["electricity"].div(200000)
+    wind["Date"]=pd.to_datetime(wind['local_time'])
+    wind = wind.set_index('Date')
+    w = {}
+    for i in hours:
+        windvals = list(wind["capacity factor"][wind["capacity factor"].index.hour == i])
+        w[i] = windvals
+    w[2].append(w[1].pop())
+    wind_pa = pd.DataFrame(w)
+
+    #PV reading
+    pv = pd.read_csv(path + folder + 'Area' + str(pa) + '/pv-' + str(pa) + '.csv' )
+    pv["capacity factor"] = pv["electricity"].div(150000)
+    pv["Date"]=pd.to_datetime(pv['local_time'])
+    pv = pv.set_index('Date')
+
+    solar = {}
+    for i in hours:
+        pvvals = list(pv["capacity factor"][pv["capacity factor"].index.hour == i])
+        solar[i] = pvvals
+    solar[2].append(solar[1].pop())
+    solar_pa = pd.DataFrame(solar)
+    
+    #capture rates
+    capture =np.array([captureRate[i][latitude.index(lat[pas.index(pa)])][longitude.index(long[pas.index(pa)])] for i in range(0, 8760)])    
+    capturerate =capture/(1000000/8760)
+    capt_rate = capturerate.reshape(365, 24)
+    dac_rate_pa = pd.DataFrame(capt_rate)
+    
+    #Combining them
+    data_pa = pd.concat([load_pa, wind_pa, solar_pa, dac_rate_pa], axis=1, ignore_index=True)
+    
+    #Clustering
+    km = KMeans(n_clusters=len(days), random_state=42, n_init = 50, 
+                max_iter=600, tol=0.0000001).fit(data_pa)
+    labels = km.predict(data_pa)
+    score.append(silhouette_score(data_pa, labels))
+    centroids  = km.cluster_centers_
+    nearest, distances = pairwise_distances_argmin_min(centroids, data_pa)
+    cluster_map = pd.DataFrame()
+    cluster_map['data_index'] = data_pa.index.values
+    cluster_map['cluster'] = km.labels_
+
+    weights = {}
+    for i in range(len(centroids)):
+        weights[i]=cluster_map[cluster_map.cluster ==i].shape[0]
+
+    area_data[pa] = {}
+    for d in days:
+        area_data[pa][d] = {}
+        area_data[pa][d]['load'] = list(np.round(np.array_split(data_pa.loc[nearest[d-1]], 4)[0], 2))
+        area_data[pa][d]['pv'] = list(np.round(np.array_split(data_pa.loc[nearest[d-1]], 4)[2], 2))
+        area_data[pa][d]['wind'] = list(np.round(np.array_split(data_pa.loc[nearest[d-1]], 4)[1], 2))
+        area_data[pa][d]['c_rate'] = list(np.round(np.array_split(data_pa.loc[nearest[d-1]], 4)[3], 2))
+        area_data[pa][d]['w'] = weights[d-1]
+    
+    
+rd = area_data
+print(rd)
